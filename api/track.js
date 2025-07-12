@@ -1,3 +1,4 @@
+// /api/track.js
 import { Redis } from '@upstash/redis';
 
 const redis = new Redis({
@@ -5,8 +6,7 @@ const redis = new Redis({
   token: process.env.KV_REST_API_TOKEN,
 });
 
-const RATE_LIMIT = 10; 
-const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+const RATE_LIMIT = 10;
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -52,6 +52,7 @@ export default async function handler(req, res) {
     const eventCounterKey = `events:${domain}:${eventType}`;
     await redis.incr(eventCounterKey);
 
+    const eventListKey = `eventlist:${domain}:${eventType}`;
     const eventData = {
       eventType,
       eventName: eventName || null,
@@ -61,19 +62,21 @@ export default async function handler(req, res) {
       extra,
     };
 
-    const eventListKey = `eventlist:${domain}:${eventType}`;
-
     if (eventType === 'click' || eventType === 'interaction') {
       await redis.lpush(eventListKey, JSON.stringify(eventData));
       await redis.ltrim(eventListKey, 0, 999);
     } else if (eventType === 'pageview') {
-      await redis.zadd(eventListKey, {
-        score: eventData.timestamp,
-        member: JSON.stringify(eventData),
-      });
+      const pageviewCountKey = `count:${domain}:pageviews`;
+      const pageviewAggregateKey = `agg:${domain}:pageviews`;
 
-      const ninetyDaysAgo = Date.now() - NINETY_DAYS_MS;
-      await redis.zremrangebyscore(eventListKey, 0, ninetyDaysAgo);
+      await redis.incr(pageviewCountKey);
+
+      if (extra.browser) await redis.hincrby(pageviewAggregateKey, `browser:${extra.browser}`, 1);
+      if (extra.os) await redis.hincrby(pageviewAggregateKey, `os:${extra.os}`, 1);
+      if (extra.location) await redis.hincrby(pageviewAggregateKey, `location:${extra.location}`, 1);
+
+      await redis.lpush(eventListKey, JSON.stringify(eventData));
+      await redis.ltrim(eventListKey, 0, 99);
     } else {
       await redis.lpush(eventListKey, JSON.stringify(eventData));
       await redis.ltrim(eventListKey, 0, 999);
